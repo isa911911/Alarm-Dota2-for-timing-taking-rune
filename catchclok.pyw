@@ -12,7 +12,6 @@ How it works
   6. Pre-game countdown (clock running toward 0:00): alarms are OFF. They start the moment the
      clock runs forward, and the app snaps to the exact game time right away.
 
-Optional: Settings > "Fade when mouse is away" makes the window see-through until you hover it.
 The "-" button minimizes it to the taskbar; alarms keep running while minimized.
 Game must run in Windowed or Borderless Windowed mode.
 OCR is Windows' own (needs an OCR language such as English: Settings > Time & language).
@@ -106,6 +105,10 @@ def load_settings():
                 data[key] = saved[key]
     except Exception:
         pass
+    data["fade"] = False          # no options besides volume: these are fixed
+    data["hold_min"] = 15
+    for t in data["timers"]:
+        t["on"] = True
     return data
 
 
@@ -681,7 +684,7 @@ class SettingsWindow:
 
         head = tk.Frame(self.win, bg=BG)
         head.pack(fill="x", padx=16)
-        for text, w in (("On", 4), ("Label", 14), ("Every (m:s)", 11), ("First at (m:s)", 13),
+        for text, w in (("Label", 14), ("Every (m:s)", 11), ("First at (m:s)", 13),
                         ("Early (s)", 8), ("Sound", 22)):
             tk.Label(head, text=text, fg=MUTED, bg=BG, font=(SANS, 8), width=w, anchor="w").pack(side="left")
 
@@ -695,20 +698,6 @@ class SettingsWindow:
                             command=self.on_vol, font=(SANS, 8))
         self.vol.set(int(app.cfg["volume"] * 100))
         self.vol.pack(side="left", padx=10, pady=8)
-        self.alpha = tk.Scale(bottom, from_=5, to=60, orient="horizontal", length=150, bg=BG2, fg=FG,
-                              troughcolor=BG3, highlightthickness=0, label="Faded opacity %",
-                              command=self.on_alpha, font=(SANS, 8))
-        self.alpha.set(int(app.cfg["idle_alpha"] * 100))
-        self.alpha.pack(side="left", padx=10, pady=8)
-        self.fade_var = tk.BooleanVar(value=bool(app.cfg.get("fade", False)))
-        tk.Checkbutton(bottom, text="Fade when mouse\nis away", variable=self.fade_var, command=self.on_fade,
-                       bg=BG2, fg=FG, activebackground=BG2, activeforeground=FG, selectcolor=BG3,
-                       font=(SANS, 9), justify="left").pack(side="left", padx=6)
-        self.hold = tk.Scale(bottom, from_=0, to=60, orient="horizontal", length=190, bg=BG2, fg=FG,
-                             troughcolor=BG3, highlightthickness=0, label="Keep counting if clock hidden (min)",
-                             command=self.on_hold, font=(SANS, 8))
-        self.hold.set(int(app.cfg.get("hold_min", 15)))
-        self.hold.pack(side="left", padx=10, pady=8)
         flat_button(bottom, "Test beep", lambda: app.sound.play(""), pad=(12, 6)).pack(side="right", padx=10)
         self.build()
         self.fit()
@@ -730,9 +719,6 @@ class SettingsWindow:
     def row(self, i, t):
         f = tk.Frame(self.list, bg=BG2)
         f.pack(fill="x", pady=3, ipady=4)
-        var_on = tk.BooleanVar(value=t.get("on", True))
-        tk.Checkbutton(f, variable=var_on, bg=BG2, activebackground=BG2, selectcolor=BG3,
-                       command=lambda: self.commit(), width=2).pack(side="left", padx=(4, 8))
         e_label = self.entry(f, t.get("label", ""), 14, text=True)
         e_im = self.entry(f, str(t["interval"] // 60), 3)
         tk.Label(f, text=":", fg=MUTED, bg=BG2).pack(side="left")
@@ -751,7 +737,7 @@ class SettingsWindow:
         flat_button(f, "Browse", lambda i=i: self.browse(i)).pack(side="left", padx=2)
         flat_button(f, "Test", lambda i=i: self.app.sound.play(self.app.cfg["timers"][i].get("sound", ""))).pack(side="left", padx=2)
         flat_button(f, "Delete", lambda i=i: self.delete(i), fg=DANGER).pack(side="right", padx=6)
-        self.rows.append(dict(on=var_on, label=e_label, im=e_im, is_=e_is, sm=e_sm, ss=e_ss, lead=e_lead))
+        self.rows.append(dict(label=e_label, im=e_im, is_=e_is, sm=e_sm, ss=e_ss, lead=e_lead))
         for e in (e_label, e_im, e_is, e_sm, e_ss, e_lead):
             e.bind("<FocusOut>", lambda ev: self.commit())
             e.bind("<Return>", lambda ev: self.commit())
@@ -779,7 +765,7 @@ class SettingsWindow:
                 t["start"] = self._int(r["sm"].get()) * 60 + self._int(r["ss"].get())
                 t["lead"] = self._int(r["lead"].get())
                 t["label"] = r["label"].get().strip() or fmt_clock(t["interval"])
-                t["on"] = bool(r["on"].get())
+                t["on"] = True
         except tk.TclError:
             return  # widgets already destroyed
         self.app.engine.forget()
@@ -811,18 +797,6 @@ class SettingsWindow:
     def on_vol(self, v):
         self.app.cfg["volume"] = int(v) / 100
         self.app.sound.volume = self.app.cfg["volume"]
-        self.app.persist()
-
-    def on_fade(self):
-        self.app.cfg["fade"] = bool(self.fade_var.get())
-        self.app.persist()
-
-    def on_hold(self, v):
-        self.app.cfg["hold_min"] = int(v)
-        self.app.persist()
-
-    def on_alpha(self, v):
-        self.app.cfg["idle_alpha"] = int(v) / 100
         self.app.persist()
 
     def close(self):
