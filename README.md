@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/34609967/README.md)
+[README.md](https://github.com/user-attachments/files/34619268/README.md)
 # catchclock
 
 **CatchClock! — interval alarms that follow the in-game clock.**
@@ -7,13 +7,15 @@ Draw a box around the game clock, and catchclock reads it on screen and rings yo
 
 Built with Dota 2 in mind, but it only looks at the pixels you select, so it can work with any game that shows an `mm:ss` clock.
 
+<!-- Add a screenshot or a short GIF here: docs/screenshot.png -->
+
 ## Download
 
-1. Go to the [**Releases**](../../releases) page.
+1. Go to the **[Releases](../../releases)** page.
 2. Download **`catchclock.exe`**.
 3. Double-click it. No installer, nothing else to set up.
 
-> 
+> **Windows may show a SmartScreen or antivirus warning** the first time. This is common for small unsigned apps. The full source code is in this repository, so you can read it or build the exe yourself (see below).
 
 ## Quick start
 
@@ -31,15 +33,15 @@ Built with Dota 2 in mind, but it only looks at the pixels you select, so it can
 - **Understands the pre-game countdown.** While the clock runs toward 0:00, alarms stay off. They start the moment the clock runs forward, and the app snaps to the exact game time.
 - **Pause aware.** If the game is paused, the alarm clock stops with it.
 - **Won't ring on junk.** If the box shows something that isn't a clock, it displays *"This is not a clock, pausing"* and holds all alarms until a real clock is read again.
-- **Survives a hidden clock.** If the box goes empty, it keeps counting on its own estimate (configurable, up to 60 minutes) and snaps back to the exact time as soon as it can read the clock again.
+- **Survives a hidden clock.** If the box goes empty, it keeps counting on its own estimate (up to 15 minutes) and snaps back to the exact time as soon as it can read the clock again.
 - **Doesn't ring for the past.** After a pause or a resync, alarms for moments that already passed are skipped.
-- **Small always-on-top window.** Drag it anywhere, minimize it to the taskbar (alarms keep running), and optionally let it fade out until you hover over it.
+- **Small always-on-top window.** Drag it anywhere and minimize it to the taskbar (alarms keep running).
 - **Private and light.** Everything runs locally. No network access, no account, no extra files: settings are kept in the Windows registry.
 
 ## Status indicator
 
 | Status | Meaning |
-| --- | --- |
+|---|---|
 | **LOCKED** | Reading the clock normally. Alarms are active. |
 | **PRE-GAME** | The clock is counting toward 0:00. Alarms are off until it runs forward. |
 | **PAUSED** | The game clock has stopped, so alarms are on hold. |
@@ -52,19 +54,18 @@ Built with Dota 2 in mind, but it only looks at the pixels you select, so it can
 ## Settings
 
 | Option | What it does |
-| --- | --- |
+|---|---|
 | **Every (m:s)** | How often the timer rings. |
 | **First at (m:s)** | Game time of the first ring. |
 | **Early (s)** | Rings this many seconds before the exact time. |
 | **Sound** | Pick a file for this timer, or leave it on the default beep. |
 | **Volume** | Master volume for all alarm sounds. |
-| **Fade when mouse is away** | Makes the window see-through until you hover over it. Off by default. |
-| **Keep counting if clock hidden (min)** | How long to keep estimating when the box is empty. |
 
 ## Requirements
 
 - Windows 10 (version 2004 or later) or Windows 11
-- An OCR language installed in Windows, for example **English** (*Settings \> Time \& language \> Language \& region*)
+- An OCR language installed in Windows, for example **English**
+  (*Settings > Time & language > Language & region*)
 - The game in **Windowed** or **Borderless Windowed** mode. Exclusive fullscreen can give a black capture.
 
 ## Tips for best results
@@ -72,13 +73,12 @@ Built with Dota 2 in mind, but it only looks at the pixels you select, so it can
 - Select a **tight box** around just the digits, with as little extra background as possible.
 - A larger or higher-contrast game HUD is read more reliably.
 - If the clock looks wrong now and then, no problem: single bad readings are ignored.
-- Keep the window somewhere you don't click during the game. A faded window still catches mouse clicks.
 
 ## Troubleshooting
 
 | Problem | Fix |
-| --- | --- |
-| `No Windows OCR language: add English pack` | Add English in *Settings \> Time \& language \> Language \& region*, then restart the app. |
+|---|---|
+| `No Windows OCR language: add English pack` | Add English in *Settings > Time & language > Language & region*, then restart the app. |
 | Stays on **SEARCHING** | Redo **CatchClock!** and select the digits more tightly. Make sure the game isn't in exclusive fullscreen. |
 | Shows **NOT A CLOCK** over the game | The box is probably covering more than the clock, or the clock moved. Redo **CatchClock!**. |
 | No sound | Check the sound file format (`mp3`, `wav`, `wma`, `m4a`), use **Test** in Settings, and make sure **Mute** is off. |
@@ -88,30 +88,10 @@ Built with Dota 2 in mind, but it only looks at the pixels you select, so it can
 
 Requires Python 3.10 or newer.
 
-```
+```bash
 pip install mss pillow winocr
 python catchclok.pyw
 ```
-
-## Build the exe yourself
-
-Put `build_exe.bat` next to `catchclok.pyw` and double-click it. The result appears in the `dist` folder.
-
-Or run the commands manually:
-
-```
-python -m pip install --upgrade pyinstaller mss pillow winocr
-python -m PyInstaller --onefile --noconsole --clean --name catchclock ^
-  --collect-submodules winrt ^
-  --hidden-import winrt.windows.media.ocr ^
-  --hidden-import winrt.windows.globalization ^
-  --hidden-import winrt.windows.storage.streams ^
-  --hidden-import winrt.windows.graphics.imaging ^
-  --hidden-import winrt.windows.foundation ^
-  --hidden-import winrt.windows.foundation.collections ^
-  catchclok.pyw
-```
-
 ## How it works
 
 catchclock takes a screenshot of the area you choose, reads the text with the **built-in Windows OCR engine**, and turns it into game time. A small clock-sync layer ignores misreads, notices pauses and the pre-game countdown, and keeps its own time between readings. Alarms are scheduled on that game time.
@@ -122,5 +102,3 @@ It only looks at a screenshot of the selected area. It does not read or change t
 ## Credits
 
 Made with the help of [Claude](https://claude.ai).
-
-*catchclock is a fan-made utility*
