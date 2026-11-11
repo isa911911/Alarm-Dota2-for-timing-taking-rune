@@ -51,18 +51,6 @@ def enable_dpi_awareness():
             pass
 
 
-def exclude_from_capture(tk_window):
-    """Hide our own window from screen capture, so it never reads itself."""
-    if not IS_WIN:
-        return
-    try:
-        tk_window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(tk_window.winfo_id()) or tk_window.winfo_id()
-        ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
-    except Exception:
-        pass
-
-
 def virtual_screen():
     """x, y, w, h of the whole desktop (all monitors)."""
     if IS_WIN:
@@ -109,6 +97,7 @@ def load_settings():
     data["hold_min"] = 15
     for t in data["timers"]:
         t["on"] = True
+        t["start"] = int(t["interval"])   # no separate "first ring" setting any more
     return data
 
 
@@ -129,15 +118,17 @@ def save_settings(data):
 _CLOCK_RE = re.compile(r"(-)?\s*(\d{1,2})\s*[:;.,]\s*(\d{2})(?:\s*[:;.,]\s*(\d{2}))?")
 
 
-def parse_clock(text):
+def _parse_line(text):
     """'12:34' -> 754, '-0:45' -> -45, '1:08:20' -> 4100. None if no clock found."""
     if not text:
         return None
     text = text.replace("O", "0").replace("o", "0").replace("l", "1").replace("I", "1")
     m = _CLOCK_RE.search(text)
     if m:
-        rest = re.sub(r"\s", "", text[:m.start()] + text[m.end():])
-        if len(rest) > 3:            # a sentence that happens to contain "10:30" is not a clock
+        # symbols around the digits (the sun / moon icon read as "*", "©"...) are fine;
+        # real words or numbers next to it make it a sentence, not a clock
+        rest = re.sub(r"[^0-9A-Za-z]", "", text[:m.start()] + text[m.end():])
+        if len(rest) > 3:
             return None
         neg, a, b, c = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
         if c is not None:
@@ -162,6 +153,21 @@ def parse_clock(text):
             total = mm * 60 + ss
             return -total if neg else total
     return None
+
+
+def parse_clock(text):
+    """Find the clock in OCR text. Each line is judged on its own, so an icon (sun, moon...)
+    that the OCR turns into a separate line of junk cannot spoil the reading."""
+    if not text:
+        return None
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) <= 1:
+        return _parse_line(text)
+    for ln in lines:
+        v = _parse_line(ln)
+        if v is not None:
+            return v
+    return _parse_line(" ".join(lines))     # the clock itself was split over two lines
 
 
 def fmt_clock(sec):
@@ -507,6 +513,14 @@ def make_ocr():
 
         def read_with(lang, img):
             res = winocr.recognize_pil_sync(img, lang)
+            lines = res.get("lines") if isinstance(res, dict) else getattr(res, "lines", None)
+            if lines:
+                try:
+                    return "\n".join(
+                        (ln.get("text", "") if isinstance(ln, dict) else getattr(ln, "text", "")) or ""
+                        for ln in lines)
+                except Exception:
+                    pass
             if isinstance(res, dict):
                 return res.get("text", "") or ""
             return getattr(res, "text", "") or ""
@@ -530,7 +544,7 @@ def make_ocr():
 
         def run(img):
             res, _ = eng(np.array(img.convert("RGB")))
-            return " ".join(r[1] for r in res) if res else ""
+            return "\n".join(r[1] for r in res) if res else ""
         return run
     except Exception:
         pass
@@ -549,20 +563,45 @@ class Reader(threading.Thread):
         self.error = None
 
     @staticmethod
-    def _prep(img):
+    def _prep(img, target=80, invert=True, neutral=False):
         """Bigger, dark text on a light background, with a margin: what OCR engines like best."""
         from PIL import Image, ImageOps, ImageStat
         g = img.convert("L")
-        if g.height < 80:
-            s = max(1, math.ceil(80 / g.height))
+        if neutral:
+            # icons are coloured, the digits are white/grey: paint every coloured pixel as background
+            sat = img.convert("HSV").split()[1].point(lambda x: 255 if x > 90 else 0)
+            g.paste(int(ImageStat.Stat(g).median[0]), mask=sat)
+        if g.height < target:
+            s = max(1, math.ceil(target / g.height))
             g = g.resize((g.width * s, g.height * s), Image.LANCZOS)
         bg = int(ImageStat.Stat(g).median[0])
-        if bg < 128:
+        if invert and bg < 128:
             g = ImageOps.invert(g)
             bg = 255 - bg
         out = Image.new("L", (g.width + 40, g.height + 40), bg)
         out.paste(g, (20, 20))
         return out.convert("RGB")
+
+    def _variants(self, img):
+        """Different ways to present the same picture to the OCR; used one by one, only if needed."""
+        w, h = img.size
+        yield self._prep(img)                                            # normal
+        yield self._prep(img, target=100, neutral=True)                  # icon colours removed
+        yield self._prep(img, target=160)                                # bigger digits
+        yield self._prep(img.crop((0, int(h * 0.35), w, h)), target=100) # skip an icon above the digits
+        yield self._prep(img, invert=False)                              # original colours
+
+    def read_clock(self, img):
+        """(text, seconds). Tries several presentations until one reads as a clock."""
+        seen = ""
+        for variant in self._variants(img):
+            text = self.ocr(variant)
+            if not seen.strip():
+                seen = text
+            value = parse_clock(text)
+            if value is not None:
+                return text, value
+        return seen, None
 
     def run(self):
         try:
@@ -585,8 +624,7 @@ class Reader(threading.Thread):
                         l, t, w, h = region
                         shot = sct.grab({"left": l, "top": t, "width": w, "height": h})
                         img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-                        text = self.ocr(self._prep(img))
-                        value = parse_clock(text)
+                        text, value = self.read_clock(img)
                         self.error = None
                         self.app.on_reading(img, text, value, time.monotonic())
                     except Exception as e:
@@ -674,7 +712,6 @@ class SettingsWindow:
         self.win.configure(bg=BG)
         self.win.attributes("-topmost", True)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
-        exclude_from_capture(self.win)
         self.rows = []
 
         top = tk.Frame(self.win, bg=BG)
@@ -684,7 +721,7 @@ class SettingsWindow:
 
         head = tk.Frame(self.win, bg=BG)
         head.pack(fill="x", padx=16)
-        for text, w in (("Label", 14), ("Every (m:s)", 11), ("First at (m:s)", 13),
+        for text, w in (("Label", 14), ("Every (m:s)", 11),
                         ("Early (s)", 8), ("Sound", 22)):
             tk.Label(head, text=text, fg=MUTED, bg=BG, font=(SANS, 8), width=w, anchor="w").pack(side="left")
 
@@ -724,11 +761,6 @@ class SettingsWindow:
         tk.Label(f, text=":", fg=MUTED, bg=BG2).pack(side="left")
         e_is = self.entry(f, f"{t['interval'] % 60:02d}", 3)
         tk.Label(f, text="  ", bg=BG2).pack(side="left")
-        st = int(t.get("start", t["interval"]))
-        e_sm = self.entry(f, str(st // 60), 3)
-        tk.Label(f, text=":", fg=MUTED, bg=BG2).pack(side="left")
-        e_ss = self.entry(f, f"{st % 60:02d}", 3)
-        tk.Label(f, text="  ", bg=BG2).pack(side="left")
         e_lead = self.entry(f, str(t.get("lead", 0)), 4)
         name = os.path.basename(t.get("sound", "")) or "default beep"
         lab = tk.Label(f, text=name[:22], fg=ACCENT if t.get("sound") else MUTED, bg=BG2,
@@ -737,8 +769,8 @@ class SettingsWindow:
         flat_button(f, "Browse", lambda i=i: self.browse(i)).pack(side="left", padx=2)
         flat_button(f, "Test", lambda i=i: self.app.sound.play(self.app.cfg["timers"][i].get("sound", ""))).pack(side="left", padx=2)
         flat_button(f, "Delete", lambda i=i: self.delete(i), fg=DANGER).pack(side="right", padx=6)
-        self.rows.append(dict(label=e_label, im=e_im, is_=e_is, sm=e_sm, ss=e_ss, lead=e_lead))
-        for e in (e_label, e_im, e_is, e_sm, e_ss, e_lead):
+        self.rows.append(dict(label=e_label, im=e_im, is_=e_is, lead=e_lead))
+        for e in (e_label, e_im, e_is, e_lead):
             e.bind("<FocusOut>", lambda ev: self.commit())
             e.bind("<Return>", lambda ev: self.commit())
 
@@ -762,7 +794,7 @@ class SettingsWindow:
             for t, r in zip(timers, self.rows):
                 iv = self._int(r["im"].get()) * 60 + self._int(r["is_"].get())
                 t["interval"] = max(1, iv)
-                t["start"] = self._int(r["sm"].get()) * 60 + self._int(r["ss"].get())
+                t["start"] = t["interval"]      # the first ring is always one interval in
                 t["lead"] = self._int(r["lead"].get())
                 t["label"] = r["label"].get().strip() or fmt_clock(t["interval"])
                 t["on"] = True
@@ -823,7 +855,6 @@ class App:
         self.minimized = False
         self.minimized_at = 0.0
         self.restore_pos = None
-        exclude_from_capture(self.root)
 
         self.sync = ClockSync()
         self.engine = AlarmEngine()
@@ -951,7 +982,16 @@ class App:
         x, y = self.restore_pos or tuple(self.cfg["pos"])
         self.root.geometry(f"{self.W}x{self.H}+{x}+{y}")
         self.root.attributes("-topmost", True)
-        exclude_from_capture(self.root)
+
+    def overlaps_region(self):
+        """True when this window covers the clock box (the app would then read itself)."""
+        r = self.cfg["region"]
+        if not r or self.root.state() != "normal":
+            return False
+        l, t, w, h = r
+        x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        ww, wh = self.root.winfo_width(), self.root.winfo_height()
+        return x < l + w and x + ww > l and y < t + h and y + wh > t
 
     def toggle_mute(self):
         self.muted = not self.muted
@@ -970,6 +1010,7 @@ class App:
     def on_reading(self, img, text, value, now):
         with self.lock:
             self.latest = {"img": img, "text": text, "value": value}
+            self.last_text = text
             if value is not None:
                 self.sync.feed(value, now)
             elif text.strip():
@@ -980,6 +1021,8 @@ class App:
         now = time.monotonic()
         try:
             self.update_alpha()
+            overlap = self.overlaps_region()
+            self.scan_paused = overlap          # do not read our own window
             with self.lock:
                 self.sync.hold = self.cfg.get("hold_min", 15) * 60
                 state = self.sync.state(now)
@@ -993,7 +1036,7 @@ class App:
                         self.sound.play(t.get("sound", ""))
             else:
                 self.engine.forget()
-            self.paint(game, state, paused, img, cd)
+            self.paint(game, state, paused, img, cd, overlap)
         except Exception:
             pass
         self.root.after(100, self.tick)
@@ -1013,18 +1056,26 @@ class App:
             self.alpha_now = target
         self.root.attributes("-alpha", self.alpha_now)
 
-    def paint(self, game, state, paused, img, cd=None):
+    def paint(self, game, state, paused, img, cd=None, overlap=False):
         if self.reader.error and game is None:
             self.dot.config(fg=DANGER)
             self.status.config(text="ERROR", fg=DANGER)
             self.nextl.config(text=self.reader.error[:90], fg=DANGER)
             return
         self.nextl.config(fg=MUTED)
+        if overlap:
+            self.dot.config(fg=WARN)
+            self.status.config(text="OVERLAP", fg=WARN)
+            self.clock.config(text=("~" + fmt_clock(game)) if game is not None else "--:--", fg=WARN)
+            self.nextl.config(text="Move this window away\nfrom the clock box", fg=WARN)
+            self.paint_preview(img)
+            return
         if state == "notclock":
             self.dot.config(fg=WARN)
             self.status.config(text="NOT A CLOCK", fg=WARN)
             self.clock.config(text="--:--", fg=WARN)
-            self.nextl.config(text="This is not a clock, pausing", fg=WARN)
+            seen = " ".join(getattr(self, "last_text", "").split())[:28]
+            self.nextl.config(text="This is not a clock, pausing" + (f"\nread: {seen}" if seen else ""), fg=WARN)
             self.paint_preview(img)
             return
         if state == "countdown":
